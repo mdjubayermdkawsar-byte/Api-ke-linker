@@ -11,13 +11,14 @@ export default async function handler(req, res) {
   if (!slug) return res.status(400).json({ error: "Slug required" });
 
   try {
-    // ১. প্রথমে চেক করি এটি কি কোনো 'অ্যাপ কন্ট্রোল' লিংক কিনা
-    let appRes = await fetch(`${DB_BASE}/app_links/${slug}.json`);
+    const timestamp = Date.now();
+
+    // ১. অ্যাপ কন্ট্রোল চেক (ক্যাশ ছাড়া রিয়েলটাইম ডেটা)
+    let appRes = await fetch(`${DB_BASE}/app_links/${slug}.json?t=${timestamp}`, { cache: 'no-store' });
     let appData = await appRes.json();
 
-    // পুরাতন লিংকের ব্যাকওয়ার্ড সাপোর্ট
     if (!appData) {
-      const oldRes = await fetch(`${DB_BASE}/links/${slug}.json`);
+      const oldRes = await fetch(`${DB_BASE}/links/${slug}.json?t=${timestamp}`, { cache: 'no-store' });
       const oldData = await oldRes.json();
       if (oldData && oldData.appStatus) appData = oldData;
     }
@@ -35,8 +36,8 @@ export default async function handler(req, res) {
       return res.status(200).json({ app_status: "online", message: "App is active" });
     }
 
-    // ২. এটি যদি 'সাধারণ এপিআই প্রক্সি' লিংক হয় (সম্পূর্ণ হাইড এপিআই)
-    const apiRes = await fetch(`${DB_BASE}/api_links/${slug}.json`);
+    // ২. সাধারণ এপিআই প্রক্সি চেক (রিয়েলটাইম লাইভ টার্গেট)
+    const apiRes = await fetch(`${DB_BASE}/api_links/${slug}.json?t=${timestamp}`, { cache: 'no-store' });
     const apiData = await apiRes.json();
 
     if (!apiData) {
@@ -44,10 +45,10 @@ export default async function handler(req, res) {
     }
 
     if (apiData.status === "banned") {
-      return res.status(403).json({ error: "এই এপিআই লিংকটি ব্যান করা হয়েছে।" });
+      return res.status(403).json({ error: "এই এপিআই লিংকটি অ্যাডমিন কর্তৃক ব্যান করা হয়েছে।" });
     }
 
-    // আসল এপিআই কল করা (সম্পূর্ণ গোপন থাকবে)
+    // লাইভ টার্গেট URL তৈরি করা
     let rawTarget = apiData.targetUrl.trim();
     if (!rawTarget.startsWith("http://") && !rawTarget.startsWith("https://")) {
       rawTarget = "https://" + rawTarget;
