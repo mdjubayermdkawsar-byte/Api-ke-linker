@@ -1,7 +1,14 @@
+// ভার্সেলের ডিফল্ট বডি-পার্সার বন্ধ করা (যাতে ছবি/ফাইল নষ্ট না হয়ে হুবহু আসল এপিআইতে যায়)
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', '*');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -13,7 +20,7 @@ export default async function handler(req, res) {
   try {
     const timestamp = Date.now();
 
-    // ১. অ্যাপ কন্ট্রোল চেক (ক্যাশ ছাড়া রিয়েলটাইম ডেটা)
+    // ১. অ্যাপ কন্ট্রোল চেক
     let appRes = await fetch(`${DB_BASE}/app_links/${slug}.json?t=${timestamp}`, { cache: 'no-store' });
     let appData = await appRes.json();
 
@@ -36,7 +43,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ app_status: "online", message: "App is active" });
     }
 
-    // ২. সাধারণ এপিআই প্রক্সি চেক (রিয়েলটাইম লাইভ টার্গেট)
+    // ২. সাধারণ এপিআই প্রক্সি চেক
     const apiRes = await fetch(`${DB_BASE}/api_links/${slug}.json?t=${timestamp}`, { cache: 'no-store' });
     const apiData = await apiRes.json();
 
@@ -48,7 +55,14 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: "এই এপিআই লিংকটি অ্যাডমিন কর্তৃক ব্যান করা হয়েছে।" });
     }
 
-    // লাইভ টার্গেট URL তৈরি করা
+    // ৩. অ্যাপের পাঠানো ছবি/ফাইল বাইনারি বাফার আকারে ধরা
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    const rawBodyBuffer = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
+
+    // ৪. আসল টার্গেট URL তৈরি করা
     let rawTarget = apiData.targetUrl.trim();
     if (!rawTarget.startsWith("http://") && !rawTarget.startsWith("https://")) {
       rawTarget = "https://" + rawTarget;
@@ -57,20 +71,27 @@ export default async function handler(req, res) {
     let targetUrlObj = new URL(rawTarget);
     Object.keys(queryParams).forEach(k => targetUrlObj.searchParams.append(k, queryParams[k]));
 
+    // ৫. হেডার ফিল্টার করে পাঠানো
+    const forwardHeaders = { ...req.headers };
+    delete forwardHeaders.host;
+    delete forwardHeaders.connection;
+    delete forwardHeaders['content-length'];
+
+    // ৬. আসল API-তে ছবি ও রিকোয়েস্ট ফরোয়ার্ড
     const forwardRes = await fetch(targetUrlObj.toString(), {
       method: req.method,
-      headers: { 'Content-Type': req.headers['content-type'] || 'application/json' },
-      body: ['POST', 'PUT', 'PATCH'].includes(req.method) ? JSON.stringify(req.body) : undefined
+      headers: forwardHeaders,
+      body: ['POST', 'PUT', 'PATCH'].includes(req.method) ? rawBodyBuffer : undefined
     });
 
-    const cType = forwardRes.headers.get("content-type") || "";
-    if (cType.includes("application/json")) {
-      const data = await forwardRes.json();
-      return res.status(forwardRes.status).json(data);
-    } else {
-      const text = await forwardRes.text();
-      return res.status(forwardRes.status).send(text);
+    // ৭. আসল API থেকে যে রেসপন্স (PNG ছবি বা JSON) আসবে তা হুবহু অ্যাপে ব্যাক করা
+    const contentType = forwardRes.headers.get("content-type");
+    if (contentType) {
+      res.setHeader("content-type", contentType);
     }
+
+    const responseArrayBuffer = await forwardRes.arrayBuffer();
+    return res.status(forwardRes.status).send(Buffer.from(responseArrayBuffer));
 
   } catch (error) {
     return res.status(500).json({ error: "সার্ভার এরর", details: error.message });
