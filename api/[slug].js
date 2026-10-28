@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-  // CORS হেডার
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -14,7 +13,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // ১. ফায়ারবেজ থেকে লিংক চেক
+    // ১. ফায়ারবেজ থেকে ডেটা আনা
     const fbRes = await fetch(`${FIREBASE_DB}/links/${slug}.json`);
     const linkData = await fbRes.json();
 
@@ -31,7 +30,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // ৩. অ্যাপ কিল-সুইচ ও পপ-আপ চেক (অফলাইন থাকলে)
+    // ৩. অ্যাপ কিল-সুইচ চেক (অফ থাকলে নোটিশ পাঠানো)
     if (linkData.appStatus === "offline") {
       return res.status(200).json({
         app_status: "offline",
@@ -44,18 +43,31 @@ export default async function handler(req, res) {
       });
     }
 
-    // ৪. আসল API কল করা (আসল লিংক গোপনে কাজ করবে)
-    let finalTargetUrl = new URL(linkData.targetUrl);
+    // ৪. টার্গেট URL ঠিক করা (https:// না থাকলে নিজে বসিয়ে নেবে)
+    let rawTarget = (linkData.targetUrl || "").trim();
+    if (!rawTarget.startsWith("http://") && !rawTarget.startsWith("https://")) {
+      rawTarget = "https://" + rawTarget;
+    }
+
+    let finalTargetUrl = new URL(rawTarget);
     Object.keys(queryParams).forEach(key => finalTargetUrl.searchParams.append(key, queryParams[key]));
 
+    // ৫. আসল API কল করা
     const apiRes = await fetch(finalTargetUrl.toString(), {
       method: req.method,
       headers: { 'Content-Type': 'application/json' },
       body: ['POST', 'PUT'].includes(req.method) ? JSON.stringify(req.body) : undefined
     });
 
-    const data = await apiRes.json();
-    return res.status(apiRes.status).json(data);
+    // রেসপন্স ঠিকভাবে পাঠানো (JSON অথবা সাধারণ টেক্সট)
+    const contentType = apiRes.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const data = await apiRes.json();
+      return res.status(apiRes.status).json(data);
+    } else {
+      const textData = await apiRes.text();
+      return res.status(apiRes.status).send(textData);
+    }
 
   } catch (error) {
     return res.status(500).json({ error: "সার্ভার এরর", details: error.message });
